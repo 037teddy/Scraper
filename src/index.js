@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const cheerio = require('cheerio');
+const { z } = require('zod');
 
 const USER_AGENT = 'FlyRankInternshipA9/1.0 (+https://github.com/037teddy/Scraper)';
 const TIMEOUT_MS = 8000;
@@ -118,7 +119,62 @@ async function extractBookRecord(bookUrl, sourcePage) {
     fetched_at: new Date().toISOString(),
   };
 }
+const BookSchema = z.object({
+  title: z.string().min(1),
+  product_url: z.string().url(),
+  price_gbp: z.number().positive(),
+  price_text: z.string(),
+  availability_text: z.string(),
+  rating_text: z.string().nullable(),
+  description: z.string().nullable(),
+  source_page: z.string().url(),
+  fetched_at: z.string(),
+});
 
+function normalizeRecord(raw) {
+  const priceMatch = raw.price_text.match(/[\d.]+/);
+  const price_gbp = priceMatch ? parseFloat(priceMatch[0]) : NaN;
+
+  return {
+    title: raw.title,
+    product_url: raw.product_url,
+    price_gbp,
+    price_text: raw.price_text,
+    availability_text: raw.availability_text,
+    rating_text: raw.rating_text,
+    description: raw.description,
+    source_page: raw.source_page,
+    fetched_at: raw.fetched_at,
+  };
+}
+
+function validateRecords(rawRecords) {
+  const validRecords = [];
+  const errors = [];
+  const seenUrls = new Set();
+
+  for (const raw of rawRecords) {
+    const normalized = normalizeRecord(raw);
+
+    if (seenUrls.has(normalized.product_url)) {
+      continue; // skip duplicate, already counted once
+    }
+
+    const result = BookSchema.safeParse(normalized);
+
+    if (result.success) {
+      validRecords.push(result.data);
+      seenUrls.add(normalized.product_url);
+    } else {
+      errors.push({
+        product_url: raw.product_url,
+        reason: result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '),
+      });
+    }
+  }
+
+  return { validRecords, errors };
+}
 async function main() {
   const { bookMap, pagesFetched } = await discoverCataloguePages();
   const bookUrls = Array.from(bookMap.keys());
@@ -127,15 +183,32 @@ async function main() {
   console.log(`discovered=${bookUrls.length}`);
   console.log(`unique_urls=${bookUrls.length}`);
 
-  const records = [];
+  const rawRecords = [];
   for (const bookUrl of bookUrls) {
     const sourcePage = bookMap.get(bookUrl);
     const record = await extractBookRecord(bookUrl, sourcePage);
-    records.push(record);
+    rawRecords.push(record);
   }
 
-  console.log(`detail_pages=${records.length}`);
-  console.log(JSON.stringify(records[0], null, 2));
+  console.log(`detail_pages=${rawRecords.length}`);
+
+  const { validRecords, errors } = validateRecords(rawRecords);
+
+  const outputDir = path.join(__dirname, '..', 'output');
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  fs.writeFileSync(
+    path.join(outputDir, 'books.json'),
+    JSON.stringify(validRecords, null, 2)
+  );
+
+  fs.writeFileSync(
+    path.join(outputDir, 'errors.json'),
+    JSON.stringify(errors, null, 2)
+  );
+
+  console.log(`valid_records=${validRecords.length}`);
+  console.log(`invalid_records=${errors.length}`);
 }
 main().catch((err) => {
   console.error('Run failed:', err.message);
