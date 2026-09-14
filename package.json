@@ -17,5 +17,8 @@
   "bugs": {
     "url": "https://github.com/037teddy/Scraper/issues"
   },
-  "homepage": "https://github.com/037teddy/Scraper#readme"
+  "homepage": "https://github.com/037teddy/Scraper#readme",
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  }
 }
