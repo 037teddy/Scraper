@@ -84,12 +84,54 @@ async function discoverCataloguePages() {
   return { bookUrls: Array.from(bookUrls), pagesFetched };
 }
 
+function cacheFileForBook(bookUrl) {
+  const parts = bookUrl.split('/').filter(Boolean);
+  const slug = parts[parts.length - 2]; // the segment just before "index.html"
+  return path.join(__dirname, '..', 'cache', 'books', `${slug}.html`);
+}
+
+async function extractBookRecord(bookUrl, sourcePage) {
+  const html = await fetchCached(bookUrl, cacheFileForBook(bookUrl));
+  const $ = cheerio.load(html);
+
+  const title = $('.product_main h1').text().trim();
+  const priceText = $('.product_main .price_color').first().text().trim();
+  const availabilityText = $('.product_main .availability').text().trim().replace(/\s+/g, ' ');
+
+  const ratingClasses = $('.product_main .star-rating').attr('class') || '';
+  const ratingMatch = ratingClasses.split(' ').find(c => c !== 'star-rating');
+  const ratingText = ratingMatch || null;
+
+  const descriptionEl = $('#product_description').next('p');
+  const description = descriptionEl.length ? descriptionEl.text().trim() : null;
+
+  return {
+    title,
+    product_url: bookUrl,
+    price_text: priceText,
+    availability_text: availabilityText,
+    rating_text: ratingText,
+    description,
+    source_page: sourcePage,
+    fetched_at: new Date().toISOString(),
+  };
+}
+
 async function main() {
   const { bookUrls, pagesFetched } = await discoverCataloguePages();
 
   console.log(`catalogue_pages=${pagesFetched}`);
   console.log(`discovered=${bookUrls.length}`);
   console.log(`unique_urls=${bookUrls.length}`);
+
+  const records = [];
+  for (const bookUrl of bookUrls) {
+    const record = await extractBookRecord(bookUrl, 'https://books.toscrape.com/catalogue/page-1.html');
+    records.push(record);
+  }
+
+  console.log(`detail_pages=${records.length}`);
+  console.log(JSON.stringify(records[0], null, 2));
 }
 
 main().catch((err) => {
