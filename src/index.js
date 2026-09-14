@@ -55,7 +55,7 @@ function cacheFileFor(pageNumber) {
 }
 
 async function discoverCataloguePages() {
-  const bookUrls = new Set();
+  const bookMap = new Map(); // bookUrl -> sourcePage
   let pageNumber = 1;
   let currentUrl = 'https://books.toscrape.com/catalogue/page-1.html';
   let pagesFetched = 0;
@@ -69,7 +69,9 @@ async function discoverCataloguePages() {
     $('article.product_pod h3 a').each((i, el) => {
       const href = $(el).attr('href');
       const absoluteUrl = new URL(href, currentUrl).toString();
-      bookUrls.add(absoluteUrl);
+      if (!bookMap.has(absoluteUrl)) {
+        bookMap.set(absoluteUrl, currentUrl);
+      }
     });
 
     const nextHref = $('li.next a').attr('href');
@@ -81,7 +83,7 @@ async function discoverCataloguePages() {
     }
   }
 
-  return { bookUrls: Array.from(bookUrls), pagesFetched };
+  return { bookMap, pagesFetched };
 }
 
 function cacheFileForBook(bookUrl) {
@@ -118,7 +120,8 @@ async function extractBookRecord(bookUrl, sourcePage) {
 }
 
 async function main() {
-  const { bookUrls, pagesFetched } = await discoverCataloguePages();
+  const { bookMap, pagesFetched } = await discoverCataloguePages();
+  const bookUrls = Array.from(bookMap.keys());
 
   console.log(`catalogue_pages=${pagesFetched}`);
   console.log(`discovered=${bookUrls.length}`);
@@ -126,14 +129,14 @@ async function main() {
 
   const records = [];
   for (const bookUrl of bookUrls) {
-    const record = await extractBookRecord(bookUrl, 'https://books.toscrape.com/catalogue/page-1.html');
+    const sourcePage = bookMap.get(bookUrl);
+    const record = await extractBookRecord(bookUrl, sourcePage);
     records.push(record);
   }
 
   console.log(`detail_pages=${records.length}`);
   console.log(JSON.stringify(records[0], null, 2));
 }
-
 main().catch((err) => {
   console.error('Run failed:', err.message);
   process.exit(1);
