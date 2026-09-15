@@ -7,6 +7,8 @@ const USER_AGENT = 'FlyRankInternshipA9/1.0 (+https://github.com/037teddy/Scrape
 const TIMEOUT_MS = 8000;
 const DELAY_MS = 600;
 
+let cacheHitCount = 0;
+let fetchCount = 0;
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -32,25 +34,50 @@ async function fetchCached(url, cachePath) {
   if (fs.existsSync(cachePath)) {
     const html = fs.readFileSync(cachePath, 'utf-8');
     console.log(`CACHE HIT: ${url} (${html.length} bytes)`);
+    cacheHitCount++;
     return html;
   }
 
-  const response = await fetchWithPoliteness(url);
+  let lastError;
 
-  if (response.status !== 200) {
-    throw new Error(`Fetch failed: ${url} returned status ${response.status}`);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await fetchWithPoliteness(url);
+
+      if (response.status === 200) {
+        const html = await response.text();
+        fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+        fs.writeFileSync(cachePath, html, 'utf-8');
+        console.log(`FETCH: ${url} (${html.length} bytes)`);
+        fetchCount++;
+        await delay(DELAY_MS);
+        return html;
+      }
+
+      if (response.status === 404 || response.status === 403) {
+        throw new Error(`Non-retryable status ${response.status} for ${url}`);
+      }
+
+      // 5xx or other unexpected status: worth one retry
+      lastError = new Error(`Status ${response.status} for ${url}`);
+      if (attempt < 2) {
+        console.log(`RETRY (status ${response.status}): ${url}`);
+        await delay(1000);
+      }
+    } catch (err) {
+      lastError = err;
+      if (err.message.startsWith('Non-retryable')) {
+        throw err;
+      }
+      if (attempt < 2) {
+        console.log(`RETRY (${err.message}): ${url}`);
+        await delay(1000);
+      }
+    }
   }
 
-  const html = await response.text();
-  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
-  fs.writeFileSync(cachePath, html, 'utf-8');
-  console.log(`FETCH: ${url} (${html.length} bytes)`);
-
-  await delay(DELAY_MS);
-
-  return html;
+  throw lastError;
 }
-
 function cacheFileFor(pageNumber) {
   return path.join(__dirname, '..', 'cache', `catalogue-page-${pageNumber}.html`);
 }
@@ -176,6 +203,9 @@ function validateRecords(rawRecords) {
   return { validRecords, errors };
 }
 async function main() {
+  const startTime = Date.now();
+  const startedAt = new Date(startTime).toISOString();
+
   const { bookMap, pagesFetched } = await discoverCataloguePages();
   const bookUrls = Array.from(bookMap.keys());
 
@@ -184,10 +214,17 @@ async function main() {
   console.log(`unique_urls=${bookUrls.length}`);
 
   const rawRecords = [];
+  const failedPages = [];
+
   for (const bookUrl of bookUrls) {
-    const sourcePage = bookMap.get(bookUrl);
-    const record = await extractBookRecord(bookUrl, sourcePage);
-    rawRecords.push(record);
+    const sourcePage = bookMap.get(bookUrl) || 'unknown';
+    try {
+      const record = await extractBookRecord(bookUrl, sourcePage);
+      rawRecords.push(record);
+    } catch (err) {
+      console.log(`FAILED: ${bookUrl} — ${err.message}`);
+      failedPages.push({ url: bookUrl, reason: err.message });
+    }
   }
 
   console.log(`detail_pages=${rawRecords.length}`);
@@ -205,6 +242,25 @@ async function main() {
   fs.writeFileSync(
     path.join(outputDir, 'errors.json'),
     JSON.stringify(errors, null, 2)
+  );
+
+  const endTime = Date.now();
+
+  const report = {
+    started_at: startedAt,
+    finished_at: new Date(endTime).toISOString(),
+    duration_ms: endTime - startTime,
+    pages_fetched: fetchCount,
+    cache_hits: cacheHitCount,
+    valid_records: validRecords.length,
+    invalid_records: errors.length,
+    failed_pages: failedPages.length,
+    failed_page_details: failedPages,
+  };
+
+  fs.writeFileSync(
+    path.join(outputDir, 'run-report.json'),
+    JSON.stringify(report, null, 2)
   );
 
   console.log(`valid_records=${validRecords.length}`);
